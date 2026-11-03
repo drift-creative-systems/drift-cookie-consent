@@ -1,0 +1,78 @@
+/*
+ * Drift: Cookie Consent admin styles.
+ *
+ * Loaded on Settings → Drift: Cookie Consent only.
+ * Accent: caramel #d97706 for the mark; #92400e for focus and buttons (AA on white).
+ */
+
+.drift-cookie-consent {
+	--drift-cookie-consent-accent: #d97706;
+	--drift-cookie-consent-accent-strong: #92400e;
+	--drift-cookie-consent-border: #dcdcde;
+	max-width: 960px;
+}
+
+.drift-cookie-consent__title {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+}
+
+.drift-cookie-consent__mark {
+	display: inline-flex;
+	color: var(--drift-cookie-consent-accent);
+}
+
+.drift-cookie-consent__lead {
+	margin: 16px 0 0;
+	padding-left: 12px;
+	border-left: 3px solid var(--drift-cookie-consent-accent);
+	font-size: 14px;
+}
+
+.drift-cookie-consent__card {
+	margin-top: 16px;
+	padding: 4px 20px 8px;
+	background: #fff;
+	border: 1px solid var(--drift-cookie-consent-border);
+	border-radius: 8px;
+}
+
+.drift-cookie-consent__card h2 {
+	margin: 16px 0 0;
+}
+
+.drift-cookie-consent__radio {
+	margin-right: 16px;
+}
+
+.drift-cookie-consent__help {
+	color: #50575e;
+}
+
+.drift-cookie-consent .form-table th {
+	width: 220px;
+}
+
+.drift-cookie-consent .button-primary {
+	background: var(--drift-cookie-consent-accent-strong);
+	border-color: var(--drift-cookie-consent-accent-strong);
+}
+
+.drift-cookie-consent .button-primary:hover,
+.drift-cookie-consent .button-primary:focus {
+	background: #78350f;
+	border-color: #78350f;
+}
+
+.drift-cookie-consent input:focus,
+.drift-cookie-consent textarea:focus {
+	border-color: var(--drift-cookie-consent-accent-strong);
+	box-shadow: 0 0 0 1px var(--drift-cookie-consent-accent-strong);
+}
+
+@media (max-width: 782px) {
+	.drift-cookie-consent__card {
+		padding: 4px 12px 8px;
+	}
+}

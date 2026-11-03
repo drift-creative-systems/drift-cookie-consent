@@ -1,0 +1,375 @@
+(function () {
+	'use strict';
+
+	var settings = window.DRIFT_COOKIE_CONSENT || {};
+	var defaultBgImage = settings.defaultBgImage || '';
+	var consentText = settings.consentText || 'Please accept marketing cookies to view this video.';
+	var consentLinkUrl = settings.consentLinkUrl || '';
+	var consentLinkText = settings.consentLinkText || 'Update cookie preferences';
+	var cookieCategory = settings.cookieCategory || 'marketing';
+	var consentManager = settings.consentManager === 'cookiebot' ? 'cookiebot' : 'cookiescript';
+
+	// Attribute names each consent manager scans the DOM for, and swaps into `src` once consent is granted.
+	var DATA_SRC_ATTR = consentManager === 'cookiebot' ? 'data-cookieblock-src' : 'data-src';
+	var DATA_CATEGORY_ATTR = consentManager === 'cookiebot' ? 'data-cookieconsent' : 'data-cookiecategory';
+
+	// Attributes that may hold the real embed URL, in priority order. Lazy-loaders move it out of `src`:
+	// WP Rocket uses `data-lazy-src` with `src="about:blank"`, others use `data-src`.
+	// Mirrors drift_cookie_consent_get_embed_url_attributes() in includes/iframe-blocker.php.
+	var EMBED_URL_ATTRS = ['src', 'data-lazy-src', 'data-src'];
+
+	// Lazy-loader attributes removed once an iframe is blocked, so the lazy-loader can't load it without consent.
+	// Mirrors drift_cookie_consent_get_lazyload_attributes() in includes/iframe-blocker.php.
+	var LAZYLOAD_ATTRS = ['data-lazy-src', 'data-rocket-lazyload'];
+
+	var IFRAME_SELECTOR = ['iframe[data-drift-cookie-consent-provider]'].concat(
+		EMBED_URL_ATTRS.reduce(function (selectors, attr) {
+			return selectors.concat([
+				'iframe[' + attr + '*="youtube.com"]',
+				'iframe[' + attr + '*="youtu.be"]',
+				'iframe[' + attr + '*="player.vimeo.com"]'
+			]);
+		}, [])
+	).join(', ');
+
+	function getProvider(url) {
+		if (!url) {
+			return '';
+		}
+
+		if (/(youtube(?:-nocookie)?\.com|youtu\.be)\//i.test(url)) {
+			return 'youtube';
+		}
+
+		if (/player\.vimeo\.com\/video\//i.test(url)) {
+			return 'vimeo';
+		}
+
+		return '';
+	}
+
+	function toNoCookieUrl(url) {
+		if (!url) {
+			return '';
+		}
+
+		return url
+			.replace('https://www.youtube.com/', 'https://www.youtube-nocookie.com/')
+			.replace('https://youtube.com/', 'https://www.youtube-nocookie.com/');
+	}
+
+	// Vimeo has no cookie-free domain; `dnt=1` is its equivalent and stops the player setting tracking cookies.
+	// Existing params (including the `h=` hash required by unlisted videos) are preserved.
+	function toVimeoDntUrl(url) {
+		if (!url) {
+			return '';
+		}
+
+		if (/[?&]dnt=/i.test(url)) {
+			return url.replace(/([?&])dnt=[^&#]*/i, '$1dnt=1');
+		}
+
+		var hashIndex = url.indexOf('#');
+		var fragment = hashIndex > -1 ? url.slice(hashIndex) : '';
+		var base = hashIndex > -1 ? url.slice(0, hashIndex) : url;
+
+		return base + (base.indexOf('?') > -1 ? '&' : '?') + 'dnt=1' + fragment;
+	}
+
+	function toPrivacyUrl(url, provider) {
+		if (provider === 'vimeo') {
+			return toVimeoDntUrl(url);
+		}
+
+		return toNoCookieUrl(url);
+	}
+
+	function getYouTubeVideoId(url) {
+		if (!url) {
+			return '';
+		}
+
+		var embedMatch = url.match(/youtube(?:-nocookie)?\.com\/embed\/([^?&"'>]+)/i);
+		if (embedMatch && embedMatch[1]) {
+			return embedMatch[1];
+		}
+
+		var watchMatch = url.match(/[?&]v=([^?&"'>]+)/i);
+		if (watchMatch && watchMatch[1]) {
+			return watchMatch[1];
+		}
+
+		var shortMatch = url.match(/youtu\.be\/([^?&"'>]+)/i);
+		if (shortMatch && shortMatch[1]) {
+			return shortMatch[1];
+		}
+
+		return '';
+	}
+
+	function getYouTubeThumbnailUrl(videoId) {
+		if (!videoId) {
+			return '';
+		}
+
+		return 'https://i.ytimg.com/vi/' + videoId + '/hqdefault.jpg';
+	}
+
+	// Vimeo has no predictable thumbnail URL, so look it up via the public oEmbed endpoint.
+	// `credentials: 'omit'` means no Vimeo cookies are sent or set by this request.
+	function loadVimeoThumbnail(img, sourceUrl) {
+		if (!window.fetch) {
+			return;
+		}
+
+		// oEmbed rejects protocol-relative URLs (`//player.vimeo.com/...`).
+		var absoluteUrl = sourceUrl.indexOf('//') === 0 ? 'https:' + sourceUrl : sourceUrl;
+		var oembedUrl = 'https://vimeo.com/api/oembed.json?url=' + encodeURIComponent(absoluteUrl);
+
+		window.fetch(oembedUrl, { credentials: 'omit' })
+			.then(function (response) {
+				return response.ok ? response.json() : null;
+			})
+			.then(function (data) {
+				if (!data || !data.thumbnail_url) {
+					return;
+				}
+
+				// oEmbed returns a small thumbnail (e.g. `_295x166`); request a larger render of the same image.
+				img.src = data.thumbnail_url.replace(/_\d+x\d+/, '_640');
+			})
+			.catch(function () {
+				// Leave the placeholder on its black background if the lookup fails.
+			});
+	}
+
+	function setPlaceholderImage(img, sourceUrl, provider) {
+		if (defaultBgImage) {
+			img.src = defaultBgImage;
+			return;
+		}
+
+		if (provider === 'vimeo') {
+			loadVimeoThumbnail(img, sourceUrl);
+			return;
+		}
+
+		var thumbnailUrl = getYouTubeThumbnailUrl(getYouTubeVideoId(sourceUrl));
+		if (thumbnailUrl) {
+			img.src = thumbnailUrl;
+		}
+	}
+
+	function hasConsentLoaded(iframe) {
+		return iframe.hasAttribute('src') && iframe.getAttribute('src') !== '';
+	}
+
+	function openCookieScriptSettings() {
+		if (window.CookieScript) {
+			if (typeof window.CookieScript.show === 'function') {
+				window.CookieScript.show();
+				return true;
+			}
+
+			if (window.CookieScript.instance && typeof window.CookieScript.instance.show === 'function') {
+				window.CookieScript.instance.show();
+				return true;
+			}
+
+			if (typeof window.CookieScript.showSettings === 'function') {
+				window.CookieScript.showSettings();
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	function openCookiebotSettings() {
+		if (window.Cookiebot && typeof window.Cookiebot.renew === 'function') {
+			window.Cookiebot.renew();
+			return true;
+		}
+
+		return false;
+	}
+
+	function openConsentManagerSettings() {
+		if (consentManager === 'cookiebot') {
+			return openCookiebotSettings() || openCookieScriptSettings();
+		}
+
+		return openCookieScriptSettings() || openCookiebotSettings();
+	}
+
+	function toggleState(wrapper, iframe) {
+		if (hasConsentLoaded(iframe)) {
+			wrapper.classList.add('drift-cookie-consent-consent-granted');
+			return;
+		}
+
+		wrapper.classList.remove('drift-cookie-consent-consent-granted');
+	}
+
+	function createOverlayLink() {
+		var link = document.createElement('a');
+		link.className = 'drift-cookie-consent-overlay-link';
+		link.textContent = consentLinkText;
+
+		if (consentLinkUrl) {
+			link.href = consentLinkUrl;
+			link.rel = 'nofollow noopener';
+		} else {
+			link.href = '#';
+			link.addEventListener('click', function (event) {
+				event.preventDefault();
+				openConsentManagerSettings();
+			});
+		}
+
+		return link;
+	}
+
+	// Theme ratio boxes (.embed-container, .videoWrapper, FitVids, core's .wp-has-aspect-ratio) all reserve
+	// height on the parent and absolutely position the iframe inside it. Check before wrapping, as
+	// child selectors like `.embed-container > iframe` stop matching once our wrapper is in between.
+	function isInRatioContainer(iframe) {
+		return window.getComputedStyle(iframe).position === 'absolute';
+	}
+
+	function buildPlaceholder(iframe, sourceUrl, provider) {
+		var wrapper = document.createElement('div');
+		wrapper.className = 'drift-cookie-consent-video-wrapper drift-cookie-consent-provider-' + provider;
+
+		// Fill the parent's existing ratio box rather than adding a second 16:9 box inside it.
+		if (isInRatioContainer(iframe)) {
+			wrapper.classList.add('drift-cookie-consent-video-wrapper--fill');
+		}
+
+		var placeholder = document.createElement('div');
+		placeholder.className = 'drift-cookie-consent-placeholder';
+
+		var img = document.createElement('img');
+		img.className = 'drift-cookie-consent-placeholder-image';
+		img.alt = '';
+		img.loading = 'lazy';
+		img.decoding = 'async';
+
+		setPlaceholderImage(img, sourceUrl, provider);
+
+		var shade = document.createElement('div');
+		shade.className = 'drift-cookie-consent-placeholder-shade';
+
+		var content = document.createElement('div');
+		content.className = 'drift-cookie-consent-overlay-content';
+
+		var text = document.createElement('p');
+		text.className = 'drift-cookie-consent-overlay-text';
+		text.textContent = consentText;
+
+		content.appendChild(text);
+		content.appendChild(createOverlayLink());
+
+		placeholder.appendChild(img);
+		placeholder.appendChild(shade);
+		placeholder.appendChild(content);
+
+		iframe.classList.add('drift-cookie-consent-managed-iframe');
+		iframe.parentNode.insertBefore(wrapper, iframe);
+		wrapper.appendChild(placeholder);
+		wrapper.appendChild(iframe);
+
+		return wrapper;
+	}
+
+	function mountPlaceholder(iframe, sourceUrl, provider) {
+		iframe.dataset.driftCookieConsentPrepared = '1';
+
+		var wrapper = buildPlaceholder(iframe, sourceUrl, provider);
+		toggleState(wrapper, iframe);
+
+		var observer = new MutationObserver(function () {
+			toggleState(wrapper, iframe);
+		});
+
+		observer.observe(iframe, {
+			attributes: true,
+			attributeFilter: ['src']
+		});
+	}
+
+	// Iframe already blocked server-side (includes/iframe-blocker.php). Don't touch its attributes:
+	// if the consent manager has already swapped in `src`, consent is granted and it must stay loaded.
+	function prepareServerBlockedIframe(iframe) {
+		var sourceUrl = iframe.getAttribute(DATA_SRC_ATTR) || iframe.getAttribute('src') || '';
+		if (!sourceUrl) {
+			return;
+		}
+
+		var provider = iframe.getAttribute('data-drift-cookie-consent-provider');
+		if (provider !== 'youtube' && provider !== 'vimeo') {
+			provider = getProvider(sourceUrl);
+		}
+
+		if (!provider) {
+			return;
+		}
+
+		mountPlaceholder(iframe, sourceUrl, provider);
+	}
+
+	function prepareIframe(iframe) {
+		if (iframe.dataset.driftCookieConsentPrepared === '1') {
+			return;
+		}
+
+		if (iframe.hasAttribute('data-drift-cookie-consent-provider')) {
+			prepareServerBlockedIframe(iframe);
+			return;
+		}
+
+		// Fallback for iframes the server didn't see (e.g. injected after page load).
+		// First attribute holding a supported video URL, skipping lazy-load placeholders like `src="about:blank"`.
+		var originalSrc = '';
+		var provider = '';
+		for (var i = 0; i < EMBED_URL_ATTRS.length; i++) {
+			var value = iframe.getAttribute(EMBED_URL_ATTRS[i]) || '';
+			provider = getProvider(value);
+			if (provider) {
+				originalSrc = value;
+				break;
+			}
+		}
+
+		if (!provider) {
+			return;
+		}
+
+		var privacySrc = toPrivacyUrl(originalSrc, provider);
+		if (!privacySrc) {
+			return;
+		}
+
+		iframe.removeAttribute('src');
+		LAZYLOAD_ATTRS.forEach(function (attr) {
+			iframe.removeAttribute(attr);
+		});
+		iframe.classList.remove('rocket-lazyload');
+
+		// A `data-src` left behind on a Cookiebot site would be picked up by `data-src` lazy-loaders.
+		if (DATA_SRC_ATTR !== 'data-src') {
+			iframe.removeAttribute('data-src');
+		}
+		iframe.setAttribute(DATA_SRC_ATTR, privacySrc);
+		iframe.setAttribute(DATA_CATEGORY_ATTR, cookieCategory);
+
+		mountPlaceholder(iframe, privacySrc, provider);
+	}
+
+	function init() {
+		var iframes = document.querySelectorAll(IFRAME_SELECTOR);
+		iframes.forEach(prepareIframe);
+	}
+
+	document.addEventListener('DOMContentLoaded', init);
+})();
